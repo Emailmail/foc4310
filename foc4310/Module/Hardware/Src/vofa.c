@@ -1,6 +1,10 @@
 #include "vofa.h"
+#include "bsp_uart.h"
+#include <string.h>
 
 static const uint8_t vofa_frame_head[4] = {0x00, 0x00, 0x80, 0x7F}; // float NaN 帧头
+#define VOFA_TX_MAX_FLOATS 16
+static uint8_t vofa_tx_buf[4 + VOFA_TX_MAX_FLOATS * 4]; // 帧头 + 数据拼接缓冲
 
 /**
  * @brief VOFA 接收回调 — 由 bsp_uart 在收到数据后调用
@@ -28,12 +32,17 @@ void vofa_register(vofa_t *vofa, bsp_uart_t *uart) {
     vofa->uart = uart;
     uart->device_instance = vofa;
     uart->device_callback = vofa_rx_callback;
+    bsp_uart_rx_start(uart); // 启动 DMA 接收
 }
 
 /**
  * @brief 发送 float 数组到 VOFA+ (JustFloat 模式)
  */
 void vofa_send(vofa_t *vofa, float *data, uint16_t len) {
-    bsp_uart_tx(vofa->uart, (uint8_t *)vofa_frame_head, 4, BSP_UART_TX_BLOCK);
-    bsp_uart_tx(vofa->uart, (uint8_t *)data, len * 4, BSP_UART_TX_BLOCK);
+    if (len > VOFA_TX_MAX_FLOATS) return;
+
+    uint16_t total = 4 + len * 4;
+    memcpy(vofa_tx_buf, vofa_frame_head, 4);
+    memcpy(vofa_tx_buf + 4, data, len * 4);
+    bsp_uart_tx(vofa->uart, vofa_tx_buf, total, BSP_UART_TX_DMA);
 }

@@ -1,0 +1,23 @@
+[project_search_path]: ./
+[map_search_path]: ./
+[project_file_path]: .//Nebula_st_mdk.uvprojx
+[ map_file_path]: .//Nebula_st_mdk/Nebula_st_mdk.map
+[parse_keil_map start]: 
+[Found keyword]: ----------Execution Region----------
+[name]:  ER_IROM1 
+[Exec base]: 0x8000000
+[Size]: 0xbb50
+[Max]: 0x20000
+[Found keyword]: ----------Execution Region----------
+[name]:  RW_IRAM1 
+[Exec base]: 0x20000000
+[Size]: 0x60e8
+[Max]: 0x8000
+[parse_keil_map over printf bar]: 
+  RW_IRAM1 :0x20000000
+   32.00 KB :|¡ö¡ö¡ö¡ö¡ö¡ö¡ö¡ö¡ö¡ö¡ö¡ö¡ö¡ö¡ö_____|   75.71 % (   24.23 KB /    32.00 KB) [7960 B]
+  ER_IROM1 :0x8000000
+  128.00 KB :|¡ö¡ö¡ö¡ö¡ö¡ö¡ö_____________|   36.58 % (   46.83 KB /   128.00 KB) [83120 B]
+[export csv]: ./Nebula_st_mdk_sort_by_flash.csv
+[export csv]: ./Nebula_st_mdk_sort_by_ram.csv
+[export xlsx]: Nebula_st_mdk_analysis.xlsx
