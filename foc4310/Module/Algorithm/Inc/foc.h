@@ -26,6 +26,9 @@ typedef struct {
     float Ki;
     float err;
     float inte;
+    float out;
+    float inte_lim; // 积分限幅
+    float out_lim; // 输出限幅
 } foc_pid_t;
 
 // foc 实例
@@ -51,10 +54,15 @@ typedef struct {
     float lowpass_alpha_u;  // 电流低通滤波系数
     float lowpass_alpha_v;
     float lowpass_alpha_w;
+    float lowpass_alpha_d;
+    float lowpass_alpha_q;
 
     float elec_theta; // 电角度
     float mech_theta; // 机械角度
     float elec_theta_offset; // 电角度零点偏移
+
+    foc_pid_t id_pid; // d 轴电流 PI
+    foc_pid_t iq_pid; // q 轴电流 PI
 } foc_t;
 
 void foc_register(foc_t *foc, bsp_pwm_t *pwmu, bsp_pwm_t *pwmv, bsp_pwm_t *pwmw, float vdc, uint8_t pole_pairs, float elec_theta_offset);
@@ -63,5 +71,8 @@ void foc_openloop_virtual(foc_t *foc, float Ud, float Uq, float elec_theta);
 void foc_update(foc_t *foc, float mech_theta, float Iu, float Iv, float Iw);
 void foc_openloop(foc_t *foc, float Ud, float Uq);
 void foc_openloop_svpwm(foc_t *foc, float Ud, float Uq);
-
+void foc_setpid_param(foc_t *foc, float id_kp, float id_ki, float iq_kp, float iq_ki);
+void foc_setpid_outlimit(foc_t *foc, float id_out_lim, float iq_out_lim);
+void foc_setpid_intelimit(foc_t *foc, float id_inte_lim, float iq_inte_lim);
+void foc_setcurrent(foc_t *foc, float Id_ref, float Iq_ref);
 #endif

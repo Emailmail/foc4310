@@ -50,6 +50,25 @@ static void clarke(uvw_t *uvw, ab_t *ab) {
   ab->a = uvw->u; // α = u
   ab->b = (uvw->u + 2 * uvw->v) / SQRT3;  // β = (u + 2 * v) / √3
 }
+
+/**
+ * @brief FOC PID 控制
+ */
+static float foc_pid_update(foc_pid_t *pid, float ref, float fb) {
+  // 计算误差
+  float err = ref - fb;
+
+  // 计算参数
+  pid->err = err;
+  pid->inte += err;
+  pid->inte = (pid->inte > pid->inte_lim) ? pid->inte_lim : (pid->inte < -pid->inte_lim) ? -pid->inte_lim : pid->inte;  // 积分限幅
+
+  // 计算输出
+  pid->out = pid->Kp * err + pid->Ki * pid->inte;
+  pid->out = (pid->out > pid->out_lim) ? pid->out_lim : (pid->out < -pid->out_lim) ? -pid->out_lim : pid->out;  // 输出限幅
+
+  return pid->out;
+}
 // ---------------- FOC 硬件操作 ----------------
 static void foc_setspwm(bsp_pwm_t *spwmu, bsp_pwm_t *spwmv, bsp_pwm_t *spwmw,
                         uvw_t *Uuvw, float vdc, uint32_t arr) {
@@ -64,7 +83,6 @@ static void foc_setspwm(bsp_pwm_t *spwmu, bsp_pwm_t *spwmv, bsp_pwm_t *spwmw,
   bsp_pwm_setccr(spwmw, wCCR);
 }
 
-// ---------------- SVPWM ----------------
 /**
  * @brief SVPWM 扇区判断 (αβ → 1~6)
  */
@@ -92,14 +110,17 @@ static uint8_t svpwm_sector(ab_t *Uab) {
 /**
  * @brief SVPWM: αβ → CCR1/2/3 直接写寄存器
  */
-static void foc_setsvpwm(foc_t *foc) {
-  uint8_t sector = svpwm_sector(&foc->Uab);
-  TIM_TypeDef *tim = foc->pwmu->htim->Instance;
+static void foc_setsvpwm(bsp_pwm_t *spwmu, bsp_pwm_t *spwmv, bsp_pwm_t *spwmw,
+                         ab_t *Uab, float vdc, uint32_t arr) {
+  (void)spwmv; // V 句柄，保留接口一致性
+  (void)spwmw; // W 句柄，保留接口一致性
+  uint8_t sector = svpwm_sector(Uab);
+  TIM_TypeDef *tim = spwmu->htim->Instance;
 
-  float tmp = (float)foc->arr * SQRT3 / foc->vdc;
-  float X = tmp * (foc->Uab.b);
-  float Y = tmp * (foc->Uab.a * SQRT3_DIV2 + foc->Uab.b * 0.5f);
-  float Z = tmp * (-foc->Uab.a * SQRT3_DIV2 + foc->Uab.b * 0.5f);
+  float tmp = (float)arr * SQRT3 / vdc;
+  float X = tmp * (Uab->b);
+  float Y = tmp * (Uab->a * SQRT3_DIV2 + Uab->b * 0.5f);
+  float Z = tmp * (-Uab->a * SQRT3_DIV2 + Uab->b * 0.5f);
 
   float T1, T2;
   switch (sector) {
@@ -113,12 +134,12 @@ static void foc_setsvpwm(foc_t *foc) {
   }
 
   // 过调制钳位
-  if (T1 + T2 > foc->arr) {
+  if (T1 + T2 > arr) {
     float sum = T1 + T2;
-    T1 = foc->arr * T1 / sum;
-    T2 = foc->arr * T2 / sum;
+    T1 = arr * T1 / sum;
+    T2 = arr * T2 / sum;
   }
-  float T0 = (float)foc->arr - T1 - T2;
+  float T0 = (float)arr - T1 - T2;
 
   float Ta = T0 / 2.0f;
   float Tb = Ta + T1;
@@ -154,9 +175,11 @@ void foc_register(foc_t *foc, bsp_pwm_t *pwmu, bsp_pwm_t *pwmv, bsp_pwm_t *pwmw,
   foc->elec_theta_offset = elec_theta_offset;
 
   // 低通滤波默认系数
-  foc->lowpass_alpha_u = 0.2f;
-  foc->lowpass_alpha_v = 0.2f;
-  foc->lowpass_alpha_w = 0.2f;
+  foc->lowpass_alpha_u = 0.3f;
+  foc->lowpass_alpha_v = 0.3f;
+  foc->lowpass_alpha_w = 0.3f;
+  foc->lowpass_alpha_d = 0.02f;
+  foc->lowpass_alpha_q = 0.02f;
 
   // 计算 ARR
   foc->arr = pwmu->arr; // 假设三路 PWM 定时器 ARR 相同
@@ -197,6 +220,7 @@ void foc_update(foc_t *foc, float mech_theta, float Iu, float Iv, float Iw) {
   foc->mech_theta = mech_theta;
   foc->elec_theta = mech_theta * foc->pole_pairs - foc->elec_theta_offset;
 
+  // 对 uvw 电流进行低通滤波
   foc->Iuvw.u = foc->lowpass_alpha_u * Iu + (1.0f - foc->lowpass_alpha_u) * foc->Iuvw.u;
   foc->Iuvw.v = foc->lowpass_alpha_v * Iv + (1.0f - foc->lowpass_alpha_v) * foc->Iuvw.v;
   foc->Iuvw.w = foc->lowpass_alpha_w * Iw + (1.0f - foc->lowpass_alpha_w) * foc->Iuvw.w;
@@ -204,6 +228,10 @@ void foc_update(foc_t *foc, float mech_theta, float Iu, float Iv, float Iw) {
   // 更新电流
   clarke(&foc->Iuvw, &foc->Iab);
   park(&foc->Iab, &foc->Idq, foc->elec_theta);
+
+  // 对 dq 电流进行低通滤波
+  foc->Idq.d = foc->lowpass_alpha_d * foc->Idq.d + (1.0f - foc->lowpass_alpha_d) * foc->Idq.d;
+  foc->Idq.q = foc->lowpass_alpha_q * foc->Idq.q + (1.0f - foc->lowpass_alpha_q) * foc->Idq.q;
 }
 
 /**
@@ -223,16 +251,58 @@ void foc_openloop(foc_t *foc, float Ud, float Uq) {
  * @brief FOC 开环 (SVPWM)
  */
 void foc_openloop_svpwm(foc_t *foc, float Ud, float Uq) {
-  foc->Udq.d = Ud;
-  foc->Udq.q = Uq;
+  // SVPWM 推导时的方向与 SPWM 相反，所以这里取负号
+  foc->Udq.d = - Ud;
+  foc->Udq.q = - Uq;
 
   inpark(&foc->Udq, &foc->Uab, foc->elec_theta);
-  foc_setsvpwm(foc);
+  foc_setsvpwm(foc->pwmu, foc->pwmv, foc->pwmw, &foc->Uab, foc->vdc, foc->arr);
 }
 
 /**
- * @brief FOC 电流控制 (todo)
+ * @brief FOC PID 参数设置
  */
+void foc_setpid_param(foc_t *foc, float id_kp, float id_ki, float iq_kp, float iq_ki) {
+  foc->id_pid.Kp = id_kp;
+  foc->id_pid.Ki = id_ki;
+  foc->iq_pid.Kp = iq_kp;
+  foc->iq_pid.Ki = iq_ki;
+}
+
+/**
+ * @brief FOC PID 输出限幅
+ */
+void foc_setpid_outlimit(foc_t *foc, float id_out_lim, float iq_out_lim) {
+  foc->id_pid.out_lim = id_out_lim;
+  foc->iq_pid.out_lim = iq_out_lim;
+}
+
+/**
+ * @brief FOC PID 积分限幅
+ */
+void foc_setpid_intelimit(foc_t *foc, float id_inte_lim, float iq_inte_lim) {
+  foc->id_pid.inte_lim = id_inte_lim;
+  foc->iq_pid.inte_lim = iq_inte_lim;
+}
+
+/**
+ * @brief FOC 电流控制 (Id/Iq PI + SVPWM)
+ */
+void foc_setcurrent(foc_t *foc, float Id_ref, float Iq_ref) {
+  // Id/Iq PI 控制器
+  float Ud = foc_pid_update(&foc->id_pid, Id_ref, foc->Idq.d);
+  float Uq = foc_pid_update(&foc->iq_pid, Iq_ref, foc->Idq.q);
+
+  // 电压钳位
+  float limit = foc->vdc * 0.577f; // Vdc / √3
+  Ud = (Ud > limit) ? limit : (Ud < -limit) ? -limit : Ud;
+  Uq = (Uq > limit) ? limit : (Uq < -limit) ? -limit : Uq;
+
+  foc->Udq.d = Ud;
+  foc->Udq.q = Uq;
+
+  foc_openloop_svpwm(foc, Ud, Uq);
+}
 
 /**
  * @brief FOC 速度控制 (todo)

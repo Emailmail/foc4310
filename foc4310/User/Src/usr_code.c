@@ -14,7 +14,7 @@
 #include "vofa.h"
 #include "get_vol.h"
 #include "as5047p_cali.h"
-#include "adc.h"
+#include "vofa_cdc.h"
 // ---------------- 全局变量 ----------------
 // bsp
 bsp_pwm_t pwmu, pwmv, pwmw;
@@ -27,6 +27,9 @@ vofa_t vofa;
 // else
 float mech_angle = 0.0f; // 机械角度变量
 float vofa_tx_data[8] = {0}; // VOFA 接收数据数组
+
+float Id = 0.0f;
+float Iq = 0.0f;
 
 /**
  * @brief main() 初始化函数
@@ -42,11 +45,18 @@ void setup(void) {
     bsp_uart_register(&vofa_uart, &huart1, &vofa, NULL);    // VOFA UART
 
     // hardware 注册
-    as5047p_register(&as5047p, &as5047p_spi, 1.0f);    // AS5047P 注册
-    vofa_register(&vofa, &vofa_uart);   // VOFA 注册
+    as5047p_register(&as5047p, &as5047p_spi, 0.8f);    // AS5047P 注册
+    // vofa_register(&vofa, &vofa_uart);   // VOFA 注册
+
+    // vofa cdc
+    vofa_cdc_rx_bind(0, &Id);
+    vofa_cdc_rx_bind(1, &Iq);
 
     // algorithm 注册
     foc_register(&foc, &pwmu, &pwmv, &pwmw, vbus_vol, 14, 4.09710753);  // FOC 注册
+    foc_setpid_param(&foc, 30.0f, 0.2f, 30.0f, 1.0f);
+    foc_setpid_outlimit(&foc, 7.0f, 7.0f);
+    foc_setpid_intelimit(&foc, 10.0f, 10.0f);
     foc_init(&foc); // FOC 初始化
 
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);   // ADC1 注入通道触发信号
@@ -63,7 +73,7 @@ void setup(void) {
  */
 void loop(void) {
     
-    HAL_Delay(0);
+    HAL_Delay(1);
 }
 
 /**
@@ -80,11 +90,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
         vofa_tx_data[6] = foc.Idq.q;
         vofa_tx_data[7] = mech_angle;
 
-        vofa_send(&vofa, vofa_tx_data, 8);
-
-        // vofa_tx_data[0] = foc.Idq.d;
-        // vofa_tx_data[1] = foc.Idq.q;
-        // vofa_send(&vofa, vofa_tx_data, 2);
+        vofa_cdc_send(vofa_tx_data, 8);
     }
 }
 
@@ -96,6 +102,7 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
         get_current_update();
         mech_angle = as5047p_read_angle(&as5047p); // 读取机械角度
         foc_update(&foc, mech_angle, Iu, Iv, Iw); // 更新 FOC 传感器数据
-        foc_openloop_svpwm(&foc, 0.0f, 2.0f); // FOC 开环控制 (SVPWM)
+        // foc_openloop_svpwm(&foc, 0.0f, 1.0f); // FOC 开环控制 (SVPWM)
+        foc_setcurrent(&foc, Id, Iq);
     }
 }
