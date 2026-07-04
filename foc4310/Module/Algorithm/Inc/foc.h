@@ -69,6 +69,7 @@ typedef struct {
     foc_pid_t id_pid;    // d 轴电流 PI
     foc_pid_t iq_pid;    // q 轴电流 PI
     foc_pid_t speed_pid; // 速度环 PI
+
     float speed;          // 当前机械角速度 [rad/s]
     uint32_t cnt;         // 速度环降采样计数器
 

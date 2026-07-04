@@ -355,8 +355,8 @@ void foc_setspeed(foc_t *foc, float speed_ref, float Id_ref) {
 
     // 速度环: 每 10 次更新一次 Iq_ref (2kHz)
     if (foc->cnt % 10 == 0) {
-        foc_pid_update(&foc->speed_pid, speed_ref, foc->speed);
-        foc->cnt = 0;
+      foc_pid_update(&foc->speed_pid, speed_ref, foc->speed);
+      foc->cnt = 0;
     }
 
     // 计算扭矩前馈补偿值
