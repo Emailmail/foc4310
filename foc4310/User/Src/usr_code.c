@@ -25,11 +25,13 @@ foc_t foc;
 as5047p_t as5047p;
 vofa_t vofa;
 // else
+float speed = 0.0f; // 机械角速度变量
 float mech_angle = 0.0f; // 机械角度变量
 float vofa_tx_data[8] = {0}; // VOFA 接收数据数组
 
 float Id = 0.0f;
 float Iq = 0.0f;
+float radpersec = 0.0f;
 
 /**
  * @brief main() 初始化函数
@@ -45,18 +47,22 @@ void setup(void) {
     bsp_uart_register(&vofa_uart, &huart1, &vofa, NULL);    // VOFA UART
 
     // hardware 注册
-    as5047p_register(&as5047p, &as5047p_spi, 0.8f);    // AS5047P 注册
+    as5047p_register(&as5047p, &as5047p_spi, 0.3f);    // AS5047P 注册
     // vofa_register(&vofa, &vofa_uart);   // VOFA 注册
 
     // vofa cdc
     vofa_cdc_rx_bind(0, &Id);
-    vofa_cdc_rx_bind(1, &Iq);
+    vofa_cdc_rx_bind(1, &foc.speed_pid.Ki);
+    vofa_cdc_rx_bind(2, &radpersec);
+    vofa_cdc_rx_bind(3, &foc.speed_pid.Kp);
 
     // algorithm 注册
     foc_register(&foc, &pwmu, &pwmv, &pwmw, vbus_vol, 14, 4.09710753);  // FOC 注册
-    foc_setpid_param(&foc, 30.0f, 0.2f, 30.0f, 1.0f);
+    foc_setpid_param(&foc, 30.0f, 1.0f, 30.0f, 1.0f);
     foc_setpid_outlimit(&foc, 7.0f, 7.0f);
     foc_setpid_intelimit(&foc, 10.0f, 10.0f);
+    foc_setpid_speed(&foc, 0.03500f, 0.001200f, 3.0f, 200.0f);  // 速度环 PID
+    foc_settorquefeedforward(&foc, 0.060f, 0.1f, 0.10f, 0.000f);
     foc_init(&foc); // FOC 初始化
 
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);   // ADC1 注入通道触发信号
@@ -81,10 +87,10 @@ void loop(void) {
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     if(htim->Instance == TIM6) {
-        vofa_tx_data[0] = foc.Iuvw.u;
-        vofa_tx_data[1] = foc.Iuvw.v;
-        vofa_tx_data[2] = foc.Iuvw.w;
-        vofa_tx_data[3] = foc.Iab.a;
+        vofa_tx_data[0] = foc.speed_pid.pout;
+        vofa_tx_data[1] = foc.speed_pid.iout;
+        vofa_tx_data[2] = foc.torque_feedforward;
+        vofa_tx_data[3] = speed;
         vofa_tx_data[4] = foc.Iab.b;
         vofa_tx_data[5] = foc.Idq.d;
         vofa_tx_data[6] = foc.Idq.q;
@@ -101,8 +107,10 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
     if (hadc->Instance == ADC1) {
         get_current_update();
         mech_angle = as5047p_read_angle(&as5047p); // 读取机械角度
-        foc_update(&foc, mech_angle, Iu, Iv, Iw); // 更新 FOC 传感器数据
+        as5047p_getspeed();          // 获取机械角速度
+        foc_update(&foc, mech_angle, Iu, Iv, Iw, speed); // 更新 FOC 传感器数据
         // foc_openloop_svpwm(&foc, 0.0f, 1.0f); // FOC 开环控制 (SVPWM)
-        foc_setcurrent(&foc, Id, Iq);
+        // foc_setcurrent(&foc, Id, Iq);
+        foc_setspeed(&foc, radpersec, 0.0f); // FOC 速度控制
     }
 }

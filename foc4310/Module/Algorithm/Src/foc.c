@@ -64,7 +64,9 @@ static float foc_pid_update(foc_pid_t *pid, float ref, float fb) {
   pid->inte = (pid->inte > pid->inte_lim) ? pid->inte_lim : (pid->inte < -pid->inte_lim) ? -pid->inte_lim : pid->inte;  // 积分限幅
 
   // 计算输出
-  pid->out = pid->Kp * err + pid->Ki * pid->inte;
+  pid->pout = pid->Kp * err;
+  pid->iout = pid->Ki * pid->inte;
+  pid->out = pid->pout + pid->iout;
   pid->out = (pid->out > pid->out_lim) ? pid->out_lim : (pid->out < -pid->out_lim) ? -pid->out_lim : pid->out;  // 输出限幅
 
   return pid->out;
@@ -183,6 +185,17 @@ void foc_register(foc_t *foc, bsp_pwm_t *pwmu, bsp_pwm_t *pwmv, bsp_pwm_t *pwmw,
 
   // 计算 ARR
   foc->arr = pwmu->arr; // 假设三路 PWM 定时器 ARR 相同
+
+  // 速度环初始化
+  foc->speed = 0.0f;
+  foc->cnt = 0;
+  foc->speed_pid.Kp = 0.0f;
+  foc->speed_pid.Ki = 0.0f;
+  foc->speed_pid.err = 0.0f;
+  foc->speed_pid.inte = 0.0f;
+  foc->speed_pid.out = 0.0f;
+  foc->speed_pid.out_lim = 3.0f;   // Iq 参考值输出限幅 ±3A
+  foc->speed_pid.inte_lim = 5.0f;  // 积分限幅 ±5A
 }
 
 /**
@@ -215,10 +228,13 @@ void foc_openloop_virtual(foc_t *foc, float Ud, float Uq, float elec_theta) {
 /**
  * @brief FOC 传感器数据更新 (用于后续做运算)
  */
-void foc_update(foc_t *foc, float mech_theta, float Iu, float Iv, float Iw) {
+void foc_update(foc_t *foc, float mech_theta, float Iu, float Iv, float Iw, float speed) {
   // 更新角度
   foc->mech_theta = mech_theta;
   foc->elec_theta = mech_theta * foc->pole_pairs - foc->elec_theta_offset;
+
+  // 存储速度反馈
+  foc->speed = speed;
 
   // 对 uvw 电流进行低通滤波
   foc->Iuvw.u = foc->lowpass_alpha_u * Iu + (1.0f - foc->lowpass_alpha_u) * foc->Iuvw.u;
@@ -286,6 +302,30 @@ void foc_setpid_intelimit(foc_t *foc, float id_inte_lim, float iq_inte_lim) {
 }
 
 /**
+ * @brief FOC 速度环 PID 参数设置
+ */
+void foc_setpid_speed(foc_t *foc, float kp, float ki, float out_lim, float inte_lim) {
+  foc->speed_pid.Kp = kp;
+  foc->speed_pid.Ki = ki;
+  foc->speed_pid.out_lim = out_lim;
+  foc->speed_pid.inte_lim = inte_lim;
+}
+
+/**
+ * @brief FOC 设置扭矩前馈补偿的系数，用于低速运行时克服静摩擦力
+ * @brief static_compensation 静摩擦力补偿值 (静止或者微动时, 需要给电机一个最小的电流来克服静摩擦力)
+ * @brief static_threshold 静摩擦力补偿阈值 (大于这个值后开始降低静摩擦力补偿值)
+ * @brief fric_slope 摩擦力斜率 (当速度大于静摩擦力补偿阈值后, 补偿值随着速度升高而降低, fric_slope 为降低的斜率)
+ * @brief dynamic_compensation 动态摩擦力补偿值 (电机起转到一定速度后, 可以降低静摩擦力补偿值, 这个是最小值)
+ */
+void foc_settorquefeedforward(foc_t *foc, float static_compensation, float static_threshold, float fric_slope, float dynamic_compensation) {
+  foc->static_compensation = static_compensation;
+  foc->static_threshold = static_threshold;
+  foc->fric_slope = fric_slope;
+  foc->dynamic_compensation = dynamic_compensation;
+}
+
+/**
  * @brief FOC 电流控制 (Id/Iq PI + SVPWM)
  */
 void foc_setcurrent(foc_t *foc, float Id_ref, float Iq_ref) {
@@ -305,8 +345,49 @@ void foc_setcurrent(foc_t *foc, float Id_ref, float Iq_ref) {
 }
 
 /**
- * @brief FOC 速度控制 (todo)
+ * @brief FOC 速度控制 (速度环 + 电流环级联, 速度环降频执行)
+ * @param speed_ref 目标机械角速度 [rad/s]
+ * @param Id_ref    d 轴电流参考值
+ * @note  速度环每 20 个 FOC 周期执行一次
  */
+void foc_setspeed(foc_t *foc, float speed_ref, float Id_ref) {
+    foc->cnt++;
+
+    // 速度环: 每 10 次更新一次 Iq_ref (2kHz)
+    if (foc->cnt % 10 == 0) {
+        foc_pid_update(&foc->speed_pid, speed_ref, foc->speed);
+        foc->cnt = 0;
+    }
+
+    // 计算扭矩前馈补偿值
+    if(speed_ref > foc->static_threshold / 100.0f) {
+        if(foc->speed <= foc->static_threshold) {
+            foc->torque_feedforward = foc->static_compensation; // 静摩擦力补偿
+        } else {
+            foc->torque_feedforward = foc->static_compensation - (foc->speed - foc->static_threshold) * foc->fric_slope;
+            if(foc->torque_feedforward < foc->dynamic_compensation) {
+                foc->torque_feedforward = foc->dynamic_compensation; // 动态摩擦力补偿
+            }
+        }
+    } else if(speed_ref < -foc->static_threshold / 100.0f) {
+        if(foc->speed >= -foc->static_threshold) {
+            foc->torque_feedforward = -foc->static_compensation; // 静摩擦力补偿
+        } else {
+            foc->torque_feedforward = -foc->static_compensation - (foc->speed + foc->static_threshold) * foc->fric_slope;
+            if(foc->torque_feedforward > -foc->dynamic_compensation) {
+                foc->torque_feedforward = -foc->dynamic_compensation; // 动态摩擦力补偿
+            }
+        }
+    }
+
+    // 电流环: 每周期执行 (20kHz), Iq_ref 来自 speed_pid.out
+    float Ud = foc_pid_update(&foc->id_pid, Id_ref, foc->Idq.d);
+    float Uq = foc_pid_update(&foc->iq_pid, foc->speed_pid.out + foc->torque_feedforward, foc->Idq.q);
+
+    foc->Udq.d = Ud;
+    foc->Udq.q = Uq;
+    foc_openloop_svpwm(foc, Ud, Uq);
+}
 
 /**
  * @brief FOC 位置控制 (todo)
