@@ -61,8 +61,8 @@ void setup(void) {
     foc_setpid_param(&foc, 30.0f, 1.0f, 30.0f, 1.0f);
     foc_setpid_outlimit(&foc, 7.0f, 7.0f);
     foc_setpid_intelimit(&foc, 10.0f, 10.0f);
-    foc_setpid_speed(&foc, 0.04200f, 0.001300f, 3.0f, 1000.0f);  // 速度环 PID
-    foc_settorquefeedforward(&foc, 0.073f, 0.1f, 0.02f, 0.000f);
+    foc_setpid_speed(&foc, 0.03950f, 0.000800f, 3.0f, 1000.0f);  // 速度环 PID
+    foc_settorquefeedforward(&foc, 0.073f, 0.1f, 0.015f, 0.016f);
     foc_init(&foc); // FOC 初始化
 
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);   // ADC1 注入通道触发信号
