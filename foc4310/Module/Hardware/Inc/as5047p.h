@@ -21,17 +21,11 @@
 #define AS5047P_RAW_TO_DEG 0.021972656f
 
 typedef struct {
-    float alpha;
-    float measure;
-} as5047p_lowpass_t;
-
-typedef struct {
     bsp_spi_t *spi;
-    as5047p_lowpass_t lowpass;
-    float angle;
+    float angle;       // 原始编码器角度 [0, 2PI) rad
 } as5047p_t;
 
-void as5047p_register(as5047p_t *as5047p, bsp_spi_t *spi, float lowpass_alpha);
+void as5047p_register(as5047p_t *as5047p, bsp_spi_t *spi);
 uint16_t as5047p_read(as5047p_t *as5047p, uint16_t addr);
 float as5047p_read_angle(as5047p_t *as5047p);
 #endif

@@ -167,7 +167,7 @@ static void foc_setsvpwm(bsp_pwm_t *spwmu, bsp_pwm_t *spwmv, bsp_pwm_t *spwmw,
 /**
  * @brief 注册 FOC
  */
-void foc_register(foc_t *foc, bsp_pwm_t *pwmu, bsp_pwm_t *pwmv, bsp_pwm_t *pwmw, float vdc, uint8_t pole_pairs, float elec_theta_offset) {
+void foc_register(foc_t *foc, bsp_pwm_t *pwmu, bsp_pwm_t *pwmv, bsp_pwm_t *pwmw, float vdc, uint8_t pole_pairs, float elec_theta_offset, float dt) {
   // 参数传递
   foc->pwmu = pwmu;
   foc->pwmv = pwmv;
@@ -175,27 +175,49 @@ void foc_register(foc_t *foc, bsp_pwm_t *pwmu, bsp_pwm_t *pwmv, bsp_pwm_t *pwmw,
   foc->vdc = vdc;
   foc->pole_pairs = pole_pairs;
   foc->elec_theta_offset = elec_theta_offset;
+  foc->dt = dt;
 
-  // 低通滤波默认系数
-  foc->lowpass_alpha_u = 0.3f;
-  foc->lowpass_alpha_v = 0.3f;
-  foc->lowpass_alpha_w = 0.3f;
-  foc->lowpass_alpha_d = 0.02f;
-  foc->lowpass_alpha_q = 0.02f;
+  // 电流二阶滤波器初始化 (Fc=1500Hz, 参考 QD4310)
+  lpf_2nd_init(&foc->id_lpf, dt, 1500.0f, 0.707f);
+  lpf_2nd_init(&foc->iq_lpf, dt, 1500.0f, 0.707f);
+
+  // 速度二阶滤波器初始化 (Fc=300Hz, 参考 QD4310)
+  lpf_2nd_init(&foc->speed_lpf, dt, 300.0f, 0.707f);
 
   // 计算 ARR
   foc->arr = pwmu->arr; // 假设三路 PWM 定时器 ARR 相同
 
   // 速度环初始化
   foc->speed = 0.0f;
+  foc->last_angle = 0.0f;
   foc->cnt = 0;
   foc->speed_pid.Kp = 0.0f;
   foc->speed_pid.Ki = 0.0f;
   foc->speed_pid.err = 0.0f;
   foc->speed_pid.inte = 0.0f;
   foc->speed_pid.out = 0.0f;
-  foc->speed_pid.out_lim = 3.0f;   // Iq 参考值输出限幅 ±3A
-  foc->speed_pid.inte_lim = 5.0f;  // 积分限幅 ±5A
+  foc->speed_pid.out_lim = 3.0f;
+  foc->speed_pid.inte_lim = 5.0f;
+
+  // 位置环初始化
+  foc->pos_pid.Kp = 0.0f;
+  foc->pos_pid.Ki = 0.0f;
+  foc->pos_pid.err = 0.0f;
+  foc->pos_pid.inte = 0.0f;
+  foc->pos_pid.out = 0.0f;
+  foc->pos_pid.out_lim = 100.0f;
+  foc->pos_pid.inte_lim = 100.0f;
+}
+
+/**
+ * @brief 重新初始化 FOC 滤波器参数 (可选, foc_register 已设默认值)
+ * @param current_fc 电流滤波器截止频率 (Hz)
+ * @param speed_fc   速度滤波器截止频率 (Hz)
+ */
+void foc_lpf_init(foc_t *foc, float current_fc, float speed_fc) {
+    lpf_2nd_init(&foc->id_lpf,   foc->dt, current_fc, 0.707f);
+    lpf_2nd_init(&foc->iq_lpf,   foc->dt, current_fc, 0.707f);
+    lpf_2nd_init(&foc->speed_lpf, foc->dt, speed_fc,   0.707f);
 }
 
 /**
@@ -226,28 +248,33 @@ void foc_openloop_virtual(foc_t *foc, float Ud, float Uq, float elec_theta) {
 }
 
 /**
- * @brief FOC 传感器数据更新 (用于后续做运算)
+ * @brief FOC 传感器数据更新 (角度 + 速度 + 电流, 参考 QD4310 loopCtrl)
+ * @param raw_angle 原始机械角度 [rad]
+ * @param Iu,Iv,Iw  三相电流 [A]
  */
-void foc_update(foc_t *foc, float mech_theta, float Iu, float Iv, float Iw, float speed) {
-  // 更新角度
-  foc->mech_theta = mech_theta;
-  foc->elec_theta = mech_theta * foc->pole_pairs - foc->elec_theta_offset;
+void foc_update(foc_t *foc, float raw_angle, float Iu, float Iv, float Iw) {
+  // 1. 电角度 — Park 变换用原始角度 (低延迟)
+  foc->mech_theta = raw_angle;
+  foc->elec_theta = raw_angle * foc->pole_pairs - foc->elec_theta_offset;
 
-  // 存储速度反馈
-  foc->speed = speed;
+  // 速度计算
+  float delta = raw_angle - foc->last_angle;
+  if (delta > PI)       delta -= _2PI;
+  else if (delta < -PI) delta += _2PI;
+  foc->last_angle = raw_angle;
+  float raw_speed = delta / foc->dt;
+  foc->speed = lpf_2nd_update(&foc->speed_lpf, raw_speed);
 
-  // 对 uvw 电流进行低通滤波
-  foc->Iuvw.u = foc->lowpass_alpha_u * Iu + (1.0f - foc->lowpass_alpha_u) * foc->Iuvw.u;
-  foc->Iuvw.v = foc->lowpass_alpha_v * Iv + (1.0f - foc->lowpass_alpha_v) * foc->Iuvw.v;
-  foc->Iuvw.w = foc->lowpass_alpha_w * Iw + (1.0f - foc->lowpass_alpha_w) * foc->Iuvw.w;
-
-  // 更新电流
+  // 将 Iu/Iv/Iw 转换为 Id/Iq
+  foc->Iuvw.u = Iu;
+  foc->Iuvw.v = Iv;
+  foc->Iuvw.w = Iw;
   clarke(&foc->Iuvw, &foc->Iab);
   park(&foc->Iab, &foc->Idq, foc->elec_theta);
 
-  // 对 dq 电流进行低通滤波
-  foc->Idq.d = foc->lowpass_alpha_d * foc->Idq.d + (1.0f - foc->lowpass_alpha_d) * foc->Idq.d;
-  foc->Idq.q = foc->lowpass_alpha_q * foc->Idq.q + (1.0f - foc->lowpass_alpha_q) * foc->Idq.q;
+  // dq 电流二阶低通滤波
+  foc->Idq.d = lpf_2nd_update(&foc->id_lpf, foc->Idq.d);
+  foc->Idq.q = lpf_2nd_update(&foc->iq_lpf, foc->Idq.q);
 }
 
 /**
@@ -278,7 +305,7 @@ void foc_openloop_svpwm(foc_t *foc, float Ud, float Uq) {
 /**
  * @brief FOC PID 参数设置
  */
-void foc_setpid_param(foc_t *foc, float id_kp, float id_ki, float iq_kp, float iq_ki) {
+void foc_setpid_currentparam(foc_t *foc, float id_kp, float id_ki, float iq_kp, float iq_ki) {
   foc->id_pid.Kp = id_kp;
   foc->id_pid.Ki = id_ki;
   foc->iq_pid.Kp = iq_kp;
@@ -288,7 +315,7 @@ void foc_setpid_param(foc_t *foc, float id_kp, float id_ki, float iq_kp, float i
 /**
  * @brief FOC PID 输出限幅
  */
-void foc_setpid_outlimit(foc_t *foc, float id_out_lim, float iq_out_lim) {
+void foc_setpid_currentoutlimit(foc_t *foc, float id_out_lim, float iq_out_lim) {
   foc->id_pid.out_lim = id_out_lim;
   foc->iq_pid.out_lim = iq_out_lim;
 }
@@ -296,7 +323,7 @@ void foc_setpid_outlimit(foc_t *foc, float id_out_lim, float iq_out_lim) {
 /**
  * @brief FOC PID 积分限幅
  */
-void foc_setpid_intelimit(foc_t *foc, float id_inte_lim, float iq_inte_lim) {
+void foc_setpid_currentintelimit(foc_t *foc, float id_inte_lim, float iq_inte_lim) {
   foc->id_pid.inte_lim = id_inte_lim;
   foc->iq_pid.inte_lim = iq_inte_lim;
 }
@@ -312,17 +339,13 @@ void foc_setpid_speed(foc_t *foc, float kp, float ki, float out_lim, float inte_
 }
 
 /**
- * @brief FOC 设置扭矩前馈补偿的系数，用于低速运行时克服静摩擦力
- * @brief static_compensation 静摩擦力补偿值 (静止或者微动时, 需要给电机一个最小的电流来克服静摩擦力)
- * @brief static_threshold 静摩擦力补偿阈值 (大于这个值后开始降低静摩擦力补偿值)
- * @brief fric_slope 摩擦力斜率 (当速度大于静摩擦力补偿阈值后, 补偿值随着速度升高而降低, fric_slope 为降低的斜率)
- * @brief dynamic_compensation 动态摩擦力补偿值 (电机起转到一定速度后, 可以降低静摩擦力补偿值, 这个是最小值)
+ * @brief FOC 位置环 PID 参数设置
  */
-void foc_settorquefeedforward(foc_t *foc, float static_compensation, float static_threshold, float fric_slope, float dynamic_compensation) {
-  foc->static_compensation = static_compensation;
-  foc->static_threshold = static_threshold;
-  foc->fric_slope = fric_slope;
-  foc->dynamic_compensation = dynamic_compensation;
+void foc_setpid_position(foc_t *foc, float kp, float ki, float out_lim, float inte_lim) {
+  foc->pos_pid.Kp = kp;
+  foc->pos_pid.Ki = ki;
+  foc->pos_pid.out_lim = out_lim;
+  foc->pos_pid.inte_lim = inte_lim;
 }
 
 /**
@@ -345,51 +368,37 @@ void foc_setcurrent(foc_t *foc, float Id_ref, float Iq_ref) {
 }
 
 /**
- * @brief FOC 速度控制 (速度环 + 电流环级联, 速度环降频执行)
+ * @brief FOC 速度控制 (电流环每周期执行, 速度环每 10 个周期执行)
  * @param speed_ref 目标机械角速度 [rad/s]
  * @param Id_ref    d 轴电流参考值
- * @note  速度环每 20 个 FOC 周期执行一次
  */
 void foc_setspeed(foc_t *foc, float speed_ref, float Id_ref) {
     foc->cnt++;
 
-    // 速度环: 每 10 次更新一次 Iq_ref (2kHz)
+    // 速度环 (每10个FOC周期)
     if (foc->cnt % 10 == 0) {
-      foc_pid_update(&foc->speed_pid, speed_ref, foc->speed);
-      foc->cnt = 0;
+        foc_pid_update(&foc->speed_pid, speed_ref, foc->speed);
+        foc->cnt = 0;
     }
 
-    // 计算扭矩前馈补偿值
-    if(speed_ref > foc->static_threshold / 100.0f) {
-        if(foc->speed <= foc->static_threshold) {
-            foc->torque_feedforward = foc->static_compensation; // 静摩擦力补偿
-        } else {
-            foc->torque_feedforward = foc->static_compensation - (foc->speed - foc->static_threshold) * foc->fric_slope;
-            if(foc->torque_feedforward < foc->dynamic_compensation) {
-                foc->torque_feedforward = foc->dynamic_compensation; // 动态摩擦力补偿
-            }
-        }
-    } else if(speed_ref < -foc->static_threshold / 100.0f) {
-        if(foc->speed >= -foc->static_threshold) {
-            foc->torque_feedforward = -foc->static_compensation; // 静摩擦力补偿
-        } else {
-            foc->torque_feedforward = -foc->static_compensation - (foc->speed + foc->static_threshold) * foc->fric_slope;
-            if(foc->torque_feedforward > -foc->dynamic_compensation) {
-                foc->torque_feedforward = -foc->dynamic_compensation; // 动态摩擦力补偿
-            }
-        }
-    }
-
-    // 电流环: 每周期执行 (20kHz), Iq_ref 来自 speed_pid.out
-    float Ud = foc_pid_update(&foc->id_pid, Id_ref, foc->Idq.d);
-    float Uq = foc_pid_update(&foc->iq_pid, foc->speed_pid.out + foc->torque_feedforward, foc->Idq.q);
-
-    foc->Udq.d = Ud;
-    foc->Udq.q = Uq;
-    foc_openloop_svpwm(foc, Ud, Uq);
+    // 电流环 (每个FOC周期)
+    foc_setcurrent(foc, Id_ref, foc->speed_pid.out);
 }
 
 /**
- * @brief FOC 位置控制 (todo)
+ * @brief FOC 位置控制 (电流环每周期执行, 速度环和位置环每 10 个周期执行)
+ * @param pos_ref 目标机械角度 [rad]
+ * @param Id_ref  d 轴电流参考值
  */
-
+void foc_setposition(foc_t *foc, float pos_ref, float Id_ref) {
+    foc->cnt++;
+    if (foc->cnt % 10 == 0) {
+        float pos_err = pos_ref - foc->mech_theta;
+        while (pos_err > 3.14159265f) pos_err -= _2PI;
+        while (pos_err < -3.14159265f) pos_err += _2PI;
+        foc_pid_update(&foc->pos_pid, foc->mech_theta + pos_err, foc->mech_theta);
+        foc_pid_update(&foc->speed_pid, foc->pos_pid.out, foc->speed);
+        foc->cnt = 0;
+    }
+    foc_setcurrent(foc, Id_ref, foc->speed_pid.out);
+}

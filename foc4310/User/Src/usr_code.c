@@ -6,6 +6,7 @@
 #include "stm32g431xx.h"
 #include "stm32g4xx_hal.h"
 #include "tim.h"
+#include "fdcan.h"
 
 // ---------------- 根据需要添加其他模块的头文件 ----------------
 #include "foc.h"
@@ -15,6 +16,8 @@
 #include "get_vol.h"
 #include "as5047p_cali.h"
 #include "vofa_cdc.h"
+#include "communicate.h"
+#include "bsp_fdcan.h"
 // ---------------- 全局变量 ----------------
 // bsp
 bsp_pwm_t pwmu, pwmv, pwmw;
@@ -25,13 +28,19 @@ foc_t foc;
 as5047p_t as5047p;
 vofa_t vofa;
 // else
-float speed = 0.0f; // 机械角速度变量
-float mech_angle = 0.0f; // 机械角度变量
-float vofa_tx_data[8] = {0}; // VOFA 接收数据数组
+float raw_angle = 0.0f;      // 原始编码器角度 [rad]
+float vofa_tx_data[8] = {0}; // VOFA 发送数据数组
 
 float Id = 0.0f;
 float Iq = 0.0f;
 float radpersec = 0.0f;
+float pos = 0.0f;
+
+// CAN 通信
+foc_mode_t foc_mode = FOC_MODE_POSITION;
+uint8_t foc_enabled = 0;
+bsp_fdcan_t fdcan_dev = { .hfdcan = &hfdcan1 };
+        communicate_t comm;
 
 /**
  * @brief main() 初始化函数
@@ -46,29 +55,42 @@ void setup(void) {
     bsp_spi_register(&as5047p_spi, &hspi1, GPIOA, GPIO_PIN_15, &as5047p, NULL);    // AS5047P SPI
     bsp_uart_register(&vofa_uart, &huart1, &vofa, NULL);    // VOFA UART
 
-    // hardware 注册
-    as5047p_register(&as5047p, &as5047p_spi, 0.3f);    // AS5047P 注册
-    // vofa_register(&vofa, &vofa_uart);   // VOFA 注册
+    // asp5047p 注册
+    as5047p_register(&as5047p, &as5047p_spi);
 
-    // vofa cdc
-    vofa_cdc_rx_bind(0, &Id);
-    vofa_cdc_rx_bind(1, &foc.speed_pid.Ki);
-    vofa_cdc_rx_bind(2, &radpersec);
-    vofa_cdc_rx_bind(3, &foc.speed_pid.Kp);
+    // vofa 注册
+    // vofa_register(&vofa, &vofa_uart);
+    // vofa_cdc_rx_bind(0, &radpersec);
+    // vofa_cdc_rx_bind(1, &pos);
+    // vofa_cdc_rx_bind(2, &foc.speed_pid.Kp);
+    // vofa_cdc_rx_bind(3, &foc.speed_pid.Ki);
+    // vofa_cdc_rx_bind(4, &foc.speed_pid.inte_lim);
+    // vofa_cdc_rx_bind(5, &foc.speed);
 
-    // algorithm 注册
-    foc_register(&foc, &pwmu, &pwmv, &pwmw, vbus_vol, 14, 4.09710753);  // FOC 注册
-    foc_setpid_param(&foc, 30.0f, 1.0f, 30.0f, 1.0f);
-    foc_setpid_outlimit(&foc, 7.0f, 7.0f);
-    foc_setpid_intelimit(&foc, 10.0f, 10.0f);
-    foc_setpid_speed(&foc, 0.03950f, 0.000800f, 3.0f, 1000.0f);  // 速度环 PID
-    foc_settorquefeedforward(&foc, 0.073f, 0.1f, 0.015f, 0.016f);
+    // foc 注册
+    foc_register(&foc, &pwmu, &pwmv, &pwmw, vbus_vol, 14, 4.09710753, 0.00005f);  // FOC 注册, dt=50us
+    foc_lpf_init(&foc, 1500.0f, 100.0f);  // 电流 Fc=1500Hz, 速度 Fc=100Hz
+    foc_setpid_currentparam(&foc, 9.6f, 0.35f, 11.2f, 0.35f);
+    foc_setpid_currentoutlimit(&foc, 7.0f, 7.0f);
+    foc_setpid_currentintelimit(&foc, 100.0f, 100.0f);
+    foc_setpid_speed(&foc, 0.045f, 0.00015f, 3.0f, 1000.0f);  // 速度环 PID
+    foc_setpid_position(&foc, 85.0f, 0.0005f, 30.0f, 100.0f);
     foc_init(&foc); // FOC 初始化
+
+    // CAN 通信注册
+    bsp_fdcan_init(&fdcan_dev);
+    bsp_fdcan_register(&fdcan_dev, 0x400, &comm, communicate_rx_callback);
+    fdcan_dev.tx_id = 0x500;
+    communicate_init(&comm, &foc_enabled, &foc_mode,
+                     &Iq, &radpersec, &pos,           // RX: CAN→控制目标
+                     &foc.Idq.q, &foc.speed, &foc.mech_theta); // TX: 反馈→CAN
+    foc_enabled = 1;
 
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);   // ADC1 注入通道触发信号
     HAL_Delay(50);
     get_current_offset(); // 获取电机三相电流偏置
     get_current_start(); // 获取电流
+    foc_update(&foc, as5047p_read_angle(&as5047p), 0.0f, 0.0f, 0.0f);
 
     // 启动硬件
     HAL_TIM_Base_Start_IT(&htim6); // 启动定时器中断
@@ -87,16 +109,19 @@ void loop(void) {
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     if(htim->Instance == TIM6) {
-        vofa_tx_data[0] = foc.speed_pid.pout;
-        vofa_tx_data[1] = foc.speed_pid.iout;
-        vofa_tx_data[2] = foc.torque_feedforward;
-        vofa_tx_data[3] = speed;
-        vofa_tx_data[4] = foc.Iab.b;
-        vofa_tx_data[5] = foc.Idq.d;
-        vofa_tx_data[6] = foc.Idq.q;
-        vofa_tx_data[7] = mech_angle;
+        // vofa_tx_data[0] = foc.speed;
+        // vofa_tx_data[1] = foc.speed_pid.pout;
+        // vofa_tx_data[2] = foc.speed_pid.iout;
+        // vofa_tx_data[3] = foc.speed_pid.inte;
+        // vofa_tx_data[4] = foc.Iab.b;
+        // vofa_tx_data[5] = foc.Idq.d;
+        // vofa_tx_data[6] = foc.Idq.q;
+        // vofa_tx_data[7] = raw_angle;
 
-        vofa_cdc_send(vofa_tx_data, 8);
+        // vofa_cdc_send(vofa_tx_data, 8);
+        // CAN 反馈
+        fdcan_dev.tx_len = communicate_build_feedback(&comm, fdcan_dev.fdcan_tx_buff);
+        bsp_fdcan_tx(&fdcan_dev);
     }
 }
 
@@ -106,11 +131,24 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
     if (hadc->Instance == ADC1) {
         get_current_update();
-        mech_angle = as5047p_read_angle(&as5047p); // 读取机械角度
-        as5047p_getspeed();          // 获取机械角速度
-        foc_update(&foc, mech_angle, Iu, Iv, Iw, speed); // 更新 FOC 传感器数据
-        // foc_openloop_svpwm(&foc, 0.0f, 1.0f); // FOC 开环控制 (SVPWM)
-        // foc_setcurrent(&foc, Id, Iq);
-        foc_setspeed(&foc, radpersec, 0.0f); // FOC 速度控制
+        raw_angle = as5047p_read_angle(&as5047p); // 读取原始角度
+
+        foc_update(&foc, raw_angle, Iu, Iv, Iw); // 更新 FOC 数据
+
+        if (foc_enabled) {
+            switch (foc_mode) {
+                case FOC_MODE_CURRENT:
+                    foc_setcurrent(&foc, Id, Iq);
+                    break;
+                case FOC_MODE_SPEED:
+                    foc_setspeed(&foc, radpersec, 0.0f);
+                    break;
+                case FOC_MODE_POSITION:
+                    foc_setposition(&foc, pos, 0.0f);
+                    break;
+                default:
+                    break;
+            }
+        }
     }
 }

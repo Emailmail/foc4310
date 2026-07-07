@@ -1,5 +1,4 @@
 #include "as5047p.h"
-#include "arm_math.h"
 
 // ---------------- 协议层 ----------------
 /**
@@ -49,12 +48,9 @@ static void as5047p_spi_callback(void *instance, uint16_t size) {
 // ---------------- 用户 API ----------------
 /**
  * @brief 注册 AS5047P
- * @param lowpass_alpha 低通滤波系数 (0~1, 越小滤波越强)
  */
-void as5047p_register(as5047p_t *as5047p, bsp_spi_t *spi, float lowpass_alpha) {
+void as5047p_register(as5047p_t *as5047p, bsp_spi_t *spi) {
     as5047p->spi = spi;
-    as5047p->lowpass.alpha = lowpass_alpha;
-    as5047p->lowpass.measure = 0.0f;
     as5047p->angle = 0.0f;
 
     // 将自己注册到 bsp_spi 回调链, 使 HAL 中断/DMA 完成时能分发到此模块
@@ -75,22 +71,11 @@ uint16_t as5047p_read(as5047p_t *as5047p, uint16_t addr) {
 }
 
 /**
- * @brief 读取 AS5047P 角度 (带低通滤波)
- * @return 滤波后的机械角度 [0, 2PI) rad
+ * @brief 读取 AS5047P 角度 (无滤波，原始值)
+ * @return 原始机械角度 [0, 2PI) rad
+ * @note   滤波在上层 FOC 中按需进行
  */
 float as5047p_read_angle(as5047p_t *as5047p) {
-    float raw = as5047p_read(as5047p, AS5047P_ANGLECOM) * AS5047P_RAW_TO_RAD;
-    as5047p->lowpass.measure = raw;
-
-    // 角度误差限制在 [-PI, PI), 低通滤波
-    float err = raw - as5047p->angle;
-    if (err >= PI)       err -= 2.0f * PI;
-    else if (err < -PI)  err += 2.0f * PI;
-    as5047p->angle += err * as5047p->lowpass.alpha;
-
-    // 角度归一化到 [0, 2PI)
-    if (as5047p->angle >= 2.0f * PI)  as5047p->angle -= 2.0f * PI;
-    if (as5047p->angle < 0.0f)        as5047p->angle += 2.0f * PI;
-
+    as5047p->angle = as5047p_read(as5047p, AS5047P_ANGLECOM) * AS5047P_RAW_TO_RAD;
     return as5047p->angle;
 }
