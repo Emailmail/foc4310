@@ -68,7 +68,8 @@ void setup(void) {
     vofa_cdc_rx_bind(5, &foc.speed);
 
     // foc 注册
-    foc_register(&foc, &pwmu, &pwmv, &pwmw, vbus_vol, 14, 4.09710753, 0.00005f);  // FOC 注册, dt=50us
+    // foc_register(&foc, &pwmu, &pwmv, &pwmw, vbus_vol, 14, 4.09710753, 0.00005f);  // FOC 注册, dt=50us
+    foc_register(&foc, &pwmu, &pwmv, &pwmw, vbus_vol, 14, 0.601642489f, 0.00005f);  // FOC 注册, dt=50us
     foc_lpf_init(&foc, 1500.0f, 100.0f);  // 电流 Fc=1500Hz, 速度 Fc=100Hz
     foc_setpid_currentparam(&foc, 9.6f, 0.35f, 11.2f, 0.35f);
     foc_setpid_currentoutlimit(&foc, 7.0f, 7.0f);
@@ -114,11 +115,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
         vofa_tx_data[1] = foc.Idq.q;
         vofa_tx_data[2] = foc.speed;
         vofa_tx_data[3] = foc.mech_theta;
-
         vofa_cdc_send(vofa_tx_data, 4);
+
         // CAN 反馈
-        fdcan_dev.tx_len = communicate_build_feedback(&comm, fdcan_dev.fdcan_tx_buff);
-        bsp_fdcan_tx(&fdcan_dev);
+        // fdcan_dev.tx_len = communicate_build_feedback(&comm, fdcan_dev.fdcan_tx_buff);
+        // bsp_fdcan_tx(&fdcan_dev);
     }
 }
 
@@ -132,20 +133,24 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 
         foc_update(&foc, raw_angle, Iu, Iv, Iw); // 更新 FOC 数据
 
-        if (foc_enabled) {
-            switch (foc_mode) {
-                case FOC_MODE_CURRENT:
-                    foc_setcurrent(&foc, Id, Iq);
-                    break;
-                case FOC_MODE_SPEED:
-                    foc_setspeed(&foc, radpersec, 0.0f);
-                    break;
-                case FOC_MODE_POSITION:
-                    foc_setposition(&foc, pos, 0.0f);
-                    break;
-                default:
-                    break;
-            }
-        }
+        // if (foc_enabled) {
+        //     switch (foc_mode) {
+        //         case FOC_MODE_CURRENT:
+        //             foc_setcurrent(&foc, Id, Iq);
+        //             break;
+        //         case FOC_MODE_SPEED:
+        //             foc_setspeed(&foc, radpersec, 0.0f);
+        //             break;
+        //         case FOC_MODE_POSITION:
+        //             foc_setposition(&foc, pos, 0.0f);
+        //             break;
+        //         default:
+        //             break;
+        //     }
+        // }
+
+        // cali_update();
+        // foc_openloop_virtual(&foc, 2.0, 0.0, 0.0); // 开环虚拟电压矢量, 用于校准编码器零位
+        // foc_openloop(&foc, 0.0f, 1.0f);
     }
 }

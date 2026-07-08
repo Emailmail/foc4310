@@ -1,8 +1,9 @@
 #include "as5047p_cali.h"
+#include "foc.h"
 
-uint32_t before_calicount = 10000;
+uint32_t before_calicount = 30000;
 
-uint32_t cali_count = 10000;
+uint32_t cali_count = 50000;
 float cali_sum = 0.0f;
 float cali_result = 0.0f;
 
@@ -14,7 +15,7 @@ void cali_update(void) {
             cali_sum += raw_angle * 14.0f;
             cali_count--;
         } else {
-            cali_result = cali_sum / 10000.0f;
+            cali_result = cali_sum / 50000.0f;
         }
     }
 }
