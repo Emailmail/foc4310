@@ -147,7 +147,6 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
 void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi) {
     for (uint8_t i = 0; i < idx; ++i) {
         if (hspi == spi_instances[i]->hspi) {
-            // 错误发生后通知模块
             if (spi_instances[i]->device_callback != NULL) {
                 spi_instances[i]->device_callback(spi_instances[i]->device_instance, 0);
             }

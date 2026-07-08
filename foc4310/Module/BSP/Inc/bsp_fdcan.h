@@ -24,6 +24,7 @@ typedef struct {
 
     // 接收
     uint32_t rx_id;                  // 接收 ID
+    uint8_t  filter_idx;             // 占用的硬件滤波器槽 (register 时自动分配)
     void *device_instance;           // 模块实例指针 (回调时传回)
     fdcan_rx_callback device_callback;
 

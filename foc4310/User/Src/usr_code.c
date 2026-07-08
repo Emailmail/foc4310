@@ -59,13 +59,13 @@ void setup(void) {
     as5047p_register(&as5047p, &as5047p_spi);
 
     // vofa 注册
-    // vofa_register(&vofa, &vofa_uart);
-    // vofa_cdc_rx_bind(0, &radpersec);
-    // vofa_cdc_rx_bind(1, &pos);
-    // vofa_cdc_rx_bind(2, &foc.speed_pid.Kp);
-    // vofa_cdc_rx_bind(3, &foc.speed_pid.Ki);
-    // vofa_cdc_rx_bind(4, &foc.speed_pid.inte_lim);
-    // vofa_cdc_rx_bind(5, &foc.speed);
+    vofa_register(&vofa, &vofa_uart);
+    vofa_cdc_rx_bind(0, &radpersec);
+    vofa_cdc_rx_bind(1, &pos);
+    vofa_cdc_rx_bind(2, &foc.speed_pid.Kp);
+    vofa_cdc_rx_bind(3, &foc.speed_pid.Ki);
+    vofa_cdc_rx_bind(4, &foc.speed_pid.inte_lim);
+    vofa_cdc_rx_bind(5, &foc.speed);
 
     // foc 注册
     foc_register(&foc, &pwmu, &pwmv, &pwmw, vbus_vol, 14, 4.09710753, 0.00005f);  // FOC 注册, dt=50us
@@ -74,7 +74,7 @@ void setup(void) {
     foc_setpid_currentoutlimit(&foc, 7.0f, 7.0f);
     foc_setpid_currentintelimit(&foc, 100.0f, 100.0f);
     foc_setpid_speed(&foc, 0.045f, 0.00015f, 3.0f, 1000.0f);  // 速度环 PID
-    foc_setpid_position(&foc, 85.0f, 0.0005f, 30.0f, 100.0f);
+    foc_setpid_position(&foc, 60.0f, 0.0001f, 30.0f, 100.0f);
     foc_init(&foc); // FOC 初始化
 
     // CAN 通信注册
@@ -105,20 +105,17 @@ void loop(void) {
 }
 
 /**
- * @brief TIM 定时中断 (0.1ms) 回调函数
+ * @brief TIM 定时中断 (1ms) 回调函数
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     if(htim->Instance == TIM6) {
-        // vofa_tx_data[0] = foc.speed;
-        // vofa_tx_data[1] = foc.speed_pid.pout;
-        // vofa_tx_data[2] = foc.speed_pid.iout;
-        // vofa_tx_data[3] = foc.speed_pid.inte;
-        // vofa_tx_data[4] = foc.Iab.b;
-        // vofa_tx_data[5] = foc.Idq.d;
-        // vofa_tx_data[6] = foc.Idq.q;
-        // vofa_tx_data[7] = raw_angle;
+        // VOFA 反馈
+        vofa_tx_data[0] = foc.Idq.d;
+        vofa_tx_data[1] = foc.Idq.q;
+        vofa_tx_data[2] = foc.speed;
+        vofa_tx_data[3] = foc.mech_theta;
 
-        // vofa_cdc_send(vofa_tx_data, 8);
+        vofa_cdc_send(vofa_tx_data, 4);
         // CAN 反馈
         fdcan_dev.tx_len = communicate_build_feedback(&comm, fdcan_dev.fdcan_tx_buff);
         bsp_fdcan_tx(&fdcan_dev);
