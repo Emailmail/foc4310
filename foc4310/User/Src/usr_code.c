@@ -18,6 +18,7 @@
 #include "vofa_cdc.h"
 #include "communicate.h"
 #include "bsp_fdcan.h"
+#include <math.h>
 // ---------------- 全局变量 ----------------
 // bsp
 bsp_pwm_t pwmu, pwmv, pwmw;
@@ -38,6 +39,7 @@ float pos = 0.0f;
 
 // CAN 通信
 foc_mode_t foc_mode = FOC_MODE_POSITION;
+// foc_mode_t foc_mode = FOC_MODE_CURRENT;
 uint8_t foc_enabled = 0;
 bsp_fdcan_t fdcan_dev = { .hfdcan = &hfdcan1 };
         communicate_t comm;
@@ -60,21 +62,18 @@ void setup(void) {
 
     // vofa 注册
     vofa_register(&vofa, &vofa_uart);
-    vofa_cdc_rx_bind(0, &radpersec);
-    vofa_cdc_rx_bind(1, &pos);
-    vofa_cdc_rx_bind(2, &foc.speed_pid.Kp);
-    vofa_cdc_rx_bind(3, &foc.speed_pid.Ki);
-    vofa_cdc_rx_bind(4, &foc.speed_pid.inte_lim);
-    vofa_cdc_rx_bind(5, &foc.speed);
+    vofa_cdc_rx_bind(0, &Iq);
+    vofa_cdc_rx_bind(1, &radpersec);
+    vofa_cdc_rx_bind(2, &pos);
 
     // foc 注册
     // foc_register(&foc, &pwmu, &pwmv, &pwmw, vbus_vol, 14, 4.09710753, 0.00005f);  // FOC 注册, dt=50us
-    foc_register(&foc, &pwmu, &pwmv, &pwmw, vbus_vol, 14, 0.601642489f, 0.00005f);  // FOC 注册, dt=50us
+    foc_register(&foc, &pwmu, &pwmv, &pwmw, vbus_vol, 14, 0.000f, 0.00005f);  // FOC 注册, dt=50us
     foc_lpf_init(&foc, 1500.0f, 100.0f);  // 电流 Fc=1500Hz, 速度 Fc=100Hz
-    foc_setpid_currentparam(&foc, 9.6f, 0.35f, 11.2f, 0.35f);
+    foc_setpid_currentparam(&foc, 8.0f, 0.35f, 11.2f, 0.35f);
     foc_setpid_currentoutlimit(&foc, 7.0f, 7.0f);
     foc_setpid_currentintelimit(&foc, 100.0f, 100.0f);
-    foc_setpid_speed(&foc, 0.045f, 0.00015f, 3.0f, 1000.0f);  // 速度环 PID
+    foc_setpid_speed(&foc, 0.040f, 0.00015f, 3.0f, 1000.0f);  // 速度环 PID
     foc_setpid_position(&foc, 60.0f, 0.0001f, 30.0f, 100.0f);
     foc_init(&foc); // FOC 初始化
 
@@ -101,8 +100,14 @@ void setup(void) {
  * @brief main() 的 while(1) 循环函数
  */
 void loop(void) {
+    if(pos < 2 * M_PI) {
+        pos += M_PI / 4.0f;
+    } else {
+        pos += M_PI / 4.0f;
+        pos -= 2 * M_PI;
+    }
     
-    HAL_Delay(1);
+    HAL_Delay(1000);
 }
 
 /**
@@ -118,8 +123,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
         vofa_cdc_send(vofa_tx_data, 4);
 
         // CAN 反馈
-        // fdcan_dev.tx_len = communicate_build_feedback(&comm, fdcan_dev.fdcan_tx_buff);
-        // bsp_fdcan_tx(&fdcan_dev);
+        fdcan_dev.tx_len = communicate_build_feedback(&comm, fdcan_dev.fdcan_tx_buff);
+        bsp_fdcan_tx(&fdcan_dev);
     }
 }
 
@@ -133,24 +138,20 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 
         foc_update(&foc, raw_angle, Iu, Iv, Iw); // 更新 FOC 数据
 
-        // if (foc_enabled) {
-        //     switch (foc_mode) {
-        //         case FOC_MODE_CURRENT:
-        //             foc_setcurrent(&foc, Id, Iq);
-        //             break;
-        //         case FOC_MODE_SPEED:
-        //             foc_setspeed(&foc, radpersec, 0.0f);
-        //             break;
-        //         case FOC_MODE_POSITION:
-        //             foc_setposition(&foc, pos, 0.0f);
-        //             break;
-        //         default:
-        //             break;
-        //     }
-        // }
-
-        // cali_update();
-        // foc_openloop_virtual(&foc, 2.0, 0.0, 0.0); // 开环虚拟电压矢量, 用于校准编码器零位
-        // foc_openloop(&foc, 0.0f, 1.0f);
+        if (foc_enabled) {
+            switch (foc_mode) {
+                case FOC_MODE_CURRENT:
+                    foc_setcurrent(&foc, Id, Iq);
+                    break;
+                case FOC_MODE_SPEED:
+                    foc_setspeed(&foc, radpersec, 0.0f);
+                    break;
+                case FOC_MODE_POSITION:
+                    foc_setposition(&foc, pos, 0.0f);
+                    break;
+                default:
+                    break;
+            }
+        }
     }
 }

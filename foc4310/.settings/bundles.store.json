@@ -17,16 +17,12 @@
       "version": "21.1.0+st.2"
     },
     {
-      "name": "jlink-gdbserver",
-      "version": "9.24.0+st.1"
-    },
-    {
       "name": "programmer",
-      "version": "2.22.0+st.1"
+      "version": "2.23.0"
     },
     {
       "name": "stlink-gdbserver",
-      "version": "7.13.0+st.3"
+      "version": "7.14.0+st.2"
     }
   ]
 }
